@@ -352,37 +352,14 @@ bool ImageWriterWebP::writeImage(Image* sourceImage)
 
 	if( Image::colorModelIsRGBA(sourceImage->getColorModel()) ) {
 		ImageRGBA* image = sourceImage->asRGBA();
-
 		unsigned int pitch = image->getPitch();
-		uint32_t* imageRGBA = (uint32_t*)image->getBytes();
-
-		uint32_t* swapBufferARGB = (uint32_t*)malloc(image->getImageSize());
-		if( swapBufferARGB != NULL ) {
-			// Swap RGBA -> BGRA.
-			for( unsigned int y = 0; y < pic.height; y++ ) {
-				for( unsigned int x = 0; x < pic.width; x++ ) {
-					unsigned int offset = (y * pitch / 4) + x;
-					uint32_t rgba = imageRGBA[offset];
-#if __BYTE_ORDER == __LITTLE_ENDIAN
-					uint32_t argb = ((rgba & 0xFF) << 16) | ((rgba >> 16) & 0xFF) | (rgba & 0xFF00FF00);
-#else
-					uint32_t argb = (((rgba >> 24) & 0xFF) << 8) | (((rgba >> 8) & 0xFF) << 24) | (rgba & 0x00FF00FF);
-#endif
-					swapBufferARGB[offset] = argb;
-				}
-			}
-			if( WebPPictureAlloc(&pic) ) {
-				pic.writer = &webpWrite;
-				pic.custom_ptr = m_OutputStorage;
-				pic.use_argb = 1;
-				pic.argb = (uint32_t*)swapBufferARGB;
-				pic.argb_stride = image->getPitch() / image->getComponentSize();
-
-				success = WebPEncode(&m_Config, &pic);
-
-				WebPPictureFree(&pic);
-			}
-			free(swapBufferARGB);
+		const uint8_t* imageRGBA = image->getBytes();
+		pic.writer = &webpWrite;
+		pic.custom_ptr = m_OutputStorage;
+		pic.use_argb = 1;
+		if( WebPPictureImportRGBX(&pic, imageRGBA, pitch) ) {
+			success = WebPEncode(&m_Config, &pic);
+			WebPPictureFree(&pic);
 		}
 	} else if( Image::colorModelIsYUV(sourceImage->getColorModel()) ) {
 		ImageYUV* yuvImage = sourceImage->asYUV();
