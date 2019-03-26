@@ -937,16 +937,16 @@ bool ImageWriterJPEG::beginWrite(unsigned int width, unsigned int height, EImage
 	m_JPEGCompress.comp_info[2].v_samp_factor = 1;
 
 	if( Image::colorModelIsRGBA(colorModel) ) {
-		if( m_Quality == 100 ) {
+		// if( m_Quality == 100 ) {
 			m_JPEGCompress.comp_info[0].h_samp_factor = 1;
 			m_JPEGCompress.comp_info[0].v_samp_factor = 1;
-		} else if( m_Quality > 95 ) {
-			m_JPEGCompress.comp_info[0].h_samp_factor = 2;
-			m_JPEGCompress.comp_info[0].v_samp_factor = 1;
-		} else {
-			m_JPEGCompress.comp_info[0].h_samp_factor = 2;
-			m_JPEGCompress.comp_info[0].v_samp_factor = 2;
-		}
+		// } else if( m_Quality > 95 ) {
+		// 	m_JPEGCompress.comp_info[0].h_samp_factor = 2;
+		// 	m_JPEGCompress.comp_info[0].v_samp_factor = 1;
+		// } else {
+		// 	m_JPEGCompress.comp_info[0].h_samp_factor = 2;
+		// 	m_JPEGCompress.comp_info[0].v_samp_factor = 2;
+		// }
 	} else if( colorModel == kColorModel_YUV_420 ) {
 		m_JPEGCompress.raw_data_in = TRUE;
 		m_JPEGCompress.comp_info[0].h_samp_factor = 2;
