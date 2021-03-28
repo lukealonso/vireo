@@ -932,8 +932,8 @@ bool ImageWriterJPEG::beginWrite(unsigned int width, unsigned int height, EImage
 	}
 
 	m_JPEGCompress.comp_info[1].h_samp_factor = 1;
-	m_JPEGCompress.comp_info[1].h_samp_factor = 1;
-	m_JPEGCompress.comp_info[2].v_samp_factor = 1;
+	m_JPEGCompress.comp_info[1].v_samp_factor = 1;
+	m_JPEGCompress.comp_info[2].h_samp_factor = 1;
 	m_JPEGCompress.comp_info[2].v_samp_factor = 1;
 
 	if( Image::colorModelIsRGBA(colorModel) ) {
