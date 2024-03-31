@@ -31,29 +31,30 @@
 namespace imagecore {
 
 REGISTER_IMAGE_READER(ImageReaderTIFF);
+REGISTER_IMAGE_WRITER(ImageWriterTIFF);
 
 static void TIFFSilentWarningHandler( const char*, const char*, va_list ) {}
 
-tsize_t tiffRead(thandle_t handle, tdata_t buffer, tsize_t size)
+tsize_t ImageReaderTiffRead(thandle_t handle, tdata_t buffer, tsize_t size)
 {
 	ImageReader::Storage* storage = (ImageReader::Storage*)handle;
 	return (tsize_t)storage->read(buffer, size);
 }
 
-tsize_t tiffWrite(thandle_t handle, tdata_t buffer, tsize_t size)
+tsize_t ImageReaderTiffWrite(thandle_t handle, tdata_t buffer, tsize_t size)
 {
 	ASSERT(0);
 	return 0;
 }
 
-int tiffClose(thandle_t handle)
+int ImageReaderTiffClose(thandle_t handle)
 {
-    return 0;
+	return 0;
 }
 
-toff_t tiffSeek(thandle_t handle, toff_t pos, int whence)
+toff_t ImageReaderTiffSeek(thandle_t handle, toff_t pos, int whence)
 {
-    if( pos == 0xFFFFFFFF ) {
+	if( pos == 0xFFFFFFFF ) {
 		return 0xFFFFFFFF;
 	}
 	ImageReader::Storage* storage = (ImageReader::Storage*)handle;
@@ -67,7 +68,7 @@ toff_t tiffSeek(thandle_t handle, toff_t pos, int whence)
 	return (toff_t)storage->tell();
 }
 
-toff_t tiffSize(thandle_t handle)
+toff_t ImageReaderTiffSize(thandle_t handle)
 {
 	ImageReader::Storage* storage = (ImageReader::Storage*)handle;
 	uint64_t pos = storage->tell();
@@ -77,14 +78,67 @@ toff_t tiffSize(thandle_t handle)
 	return (toff_t)size;
 }
 
-int tiffMap(thandle_t, tdata_t*, toff_t*)
+int ImageReaderTiffMap(thandle_t, tdata_t*, toff_t*)
 {
-    return 0;
+	return 0;
 }
 
-void tiffUnmap(thandle_t, tdata_t, toff_t)
+void ImageReaderTiffUnmap(thandle_t, tdata_t, toff_t)
 {
-    return;
+	return;
+}
+
+tsize_t ImageWriterTiffRead(thandle_t handle, tdata_t buffer, tsize_t size)
+{
+	ImageWriterTIFF::SeekableMemoryStorage* seekableStorage = (ImageWriterTIFF::SeekableMemoryStorage*)handle;
+	tsize_t read = (tsize_t)seekableStorage->read(buffer, size);
+	return read;
+}
+
+tsize_t ImageWriterTiffWrite(thandle_t handle, tdata_t buffer, tsize_t size)
+{
+	ImageWriterTIFF::SeekableMemoryStorage* seekableStorage = (ImageWriterTIFF::SeekableMemoryStorage*)handle;
+	tsize_t written = (tsize_t)seekableStorage->write(buffer, size);
+	return written;
+}
+
+int ImageWriterTiffClose(thandle_t handle)
+{
+	// We let the d'tor handle closing TIFF handle
+	return 0;
+}
+
+toff_t ImageWriterTiffSeek(thandle_t handle, toff_t pos, int whence)
+{
+	if( pos == 0xFFFFFFFF ) {
+		return 0xFFFFFFFF;
+	}
+
+	ImageWriterTIFF::SeekableMemoryStorage* seekableStorage = (ImageWriterTIFF::SeekableMemoryStorage*)handle;
+	if(whence == SEEK_CUR) {
+		seekableStorage->seek(pos, ImageWriterTIFF::SeekMode::kSeek_Current);
+	} else if(whence == SEEK_END) {
+		seekableStorage->seek(pos, ImageWriterTIFF::SeekMode::kSeek_End);
+	} else {
+		seekableStorage->seek(pos, ImageWriterTIFF::SeekMode::kSeek_Set);
+	}
+	return (toff_t)seekableStorage->tell();
+}
+
+toff_t ImageWriterTiffSize(thandle_t handle)
+{
+	ImageWriterTIFF::SeekableMemoryStorage* seekableStorage = (ImageWriterTIFF::SeekableMemoryStorage*)handle;
+	return seekableStorage->totalBytesWritten();
+}
+
+int ImageWriterTiffMap(thandle_t, tdata_t*, toff_t*)
+{
+	return 0;
+}
+
+void ImageWriterTiffUnmap(thandle_t, tdata_t, toff_t)
+{
+	return;
 }
 
 bool ImageReaderTIFF::Factory::matchesSignature(const uint8_t* sig, unsigned int sigLen)
@@ -149,7 +203,8 @@ bool ImageReaderTIFF::readHeader()
 	TIFFSetErrorHandler(TIFFSilentWarningHandler);
 	TIFFSetWarningHandler(TIFFSilentWarningHandler);
 	// Don't allow memory mapping, read only.
-	m_Tiff = TIFFClientOpen("None", "rm", m_Source, tiffRead, tiffWrite, tiffSeek, tiffClose, tiffSize, tiffMap, tiffUnmap);
+	m_Tiff = TIFFClientOpen("None", "rm", m_Source, ImageReaderTiffRead, ImageReaderTiffWrite, ImageReaderTiffSeek, ImageReaderTiffClose,
+		ImageReaderTiffSize, ImageReaderTiffMap, ImageReaderTiffUnmap);
 	int width = 0;
 	int height = 0;
 	if( m_Tiff == NULL ) {
@@ -189,7 +244,7 @@ bool ImageReaderTIFF::readImage(Image* dest)
 	if( tempImage != NULL ) {
 		unsigned int pitch = 0;
 		uint8_t* buffer = tempImage->lockRect(m_Width, m_Height, pitch);
-		TIFFReadRGBAImageOriented(m_Tiff, m_Width, m_Height, (uint32*)buffer, ORIENTATION_TOPLEFT, 1);
+		TIFFReadRGBAImageOriented(m_Tiff, m_Width, m_Height, (uint32_t*)buffer, ORIENTATION_TOPLEFT, 1);
 		tempImage->unlockRect();
 		tempImage->copy(destImage);
 		delete tempImage;
@@ -197,6 +252,32 @@ bool ImageReaderTIFF::readImage(Image* dest)
 	}
 	TIFFRGBAImageEnd(&tiffImage);
 	return success;
+}
+
+ImageWriterTIFF::ImageWriterTIFF()
+:	m_Tiff(NULL),
+	m_TempStorage(NULL),
+	m_OutputStorage(NULL),
+	m_EncodedDataBuffer(NULL)
+{
+}
+
+ImageWriterTIFF::~ImageWriterTIFF()
+{
+	if( m_Tiff != NULL ) {
+		TIFFClose(m_Tiff);
+		m_Tiff = NULL;
+	}
+
+	if (m_TempStorage != NULL) {
+		delete m_TempStorage;
+		m_TempStorage = NULL;
+	}
+
+	if (m_EncodedDataBuffer != NULL) {
+		delete [] m_EncodedDataBuffer;
+		m_EncodedDataBuffer = NULL;
+	}
 }
 
 EImageFormat ImageReaderTIFF::getFormat()
@@ -224,4 +305,230 @@ EImageColorModel ImageReaderTIFF::getNativeColorModel()
 	return m_HasAlpha ? kColorModel_RGBA : kColorModel_RGBX;
 }
 
+// Note: Tags are not copied with this current implementation.
+//       Only default basic tags applied as if from scratch.
+bool ImageWriterTIFF::copyLossless(ImageReader* reader)
+{
+	if (reader->getFormat() != kImageFormat_TIFF) {
+		return false;
+	}
+
+	// Reader and writer both only support RGB with and w/o alpha
+	if (reader->getNativeColorModel() != kColorModel_RGBA && reader->getNativeColorModel() != kColorModel_RGBX) {
+		return false;
+	}
+
+	return ImageWriter::copyLossless(reader);
 }
+
+bool ImageWriterTIFF::writeImage(Image* sourceImage)
+{
+	TIFFSetErrorHandler(TIFFSilentWarningHandler);
+	TIFFSetWarningHandler(TIFFSilentWarningHandler);
+
+	m_Tiff = TIFFClientOpen("Memory", "wb", m_TempStorage, ImageWriterTiffRead, ImageWriterTiffWrite, ImageWriterTiffSeek, ImageWriterTiffClose,
+		ImageWriterTiffSize, ImageWriterTiffMap, ImageWriterTiffUnmap);
+	if (!m_Tiff) {
+		fprintf(stderr, "Failed to open TIFF client handle\n");
+		return false;
+	}
+
+	ImageRGBA *srcImageRGBA = sourceImage->asRGBA();
+	if (!srcImageRGBA) {
+		fprintf(stderr, "Failed to get RGBA/RGBX image buffer\n");
+		return false;
+	}
+
+	if (sourceImage->getColorModel() != kColorModel_RGBA && sourceImage->getColorModel() != kColorModel_RGBX) {
+		fprintf(stderr, "Source image color model is %d, only RGBA/RGBX is supported\n", sourceImage->getColorModel());
+		return false;
+	}
+
+	bool hasAlpha = sourceImage->getColorModel() == kColorModel_RGBA;
+
+	TIFFSetField(m_Tiff, TIFFTAG_IMAGEWIDTH, srcImageRGBA->getWidth());
+	TIFFSetField(m_Tiff, TIFFTAG_IMAGELENGTH, srcImageRGBA->getHeight());
+	TIFFSetField(m_Tiff, TIFFTAG_SAMPLESPERPIXEL, hasAlpha ? 4 : 3);
+	TIFFSetField(m_Tiff, TIFFTAG_BITSPERSAMPLE, 8);
+	TIFFSetField(m_Tiff, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+	TIFFSetField(m_Tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+	TIFFSetField(m_Tiff, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_RGB);
+
+	if (hasAlpha) {
+		// Is there a way to indicate from srcImage that alpha channel is associated/pre-multiplied?
+		uint16_t alphaChannel = EXTRASAMPLE_UNASSALPHA;
+		TIFFSetField(m_Tiff, TIFFTAG_EXTRASAMPLES, 1, &alphaChannel);
+	}
+
+	unsigned int pitch = 0;
+	uint8_t* rawBuffer = srcImageRGBA->lockRect(srcImageRGBA->getWidth(), srcImageRGBA->getHeight(), pitch);
+
+	// If there's no alpha channel we can compress the buffer 25% and write only the 3 valid channels,
+	// this requires an extra copy - more time consuming for the benefit of smaller TIFF output.
+	uint8_t *newBuffer = NULL;
+	if (!hasAlpha) {
+		// pitch is in bytes, not pixels
+		newBuffer = new uint8_t[pitch * srcImageRGBA->getHeight()];
+		uint8_t *srcPtr = rawBuffer;
+		uint8_t *dstPtr = newBuffer;
+		for (unsigned int i = 0 ; i < srcImageRGBA->getHeight() * srcImageRGBA->getWidth() ; ++i) {
+			*dstPtr = *srcPtr; dstPtr++; srcPtr++;
+			*dstPtr = *srcPtr; dstPtr++; srcPtr++;
+			*dstPtr = *srcPtr; dstPtr++; srcPtr++;
+			srcPtr++;
+		}
+		rawBuffer = newBuffer;
+	}
+
+	for (unsigned int i = 0 ; i < srcImageRGBA->getHeight() ; ++i) {
+		if (TIFFWriteScanline(m_Tiff, &rawBuffer[srcImageRGBA->getWidth() * i * (hasAlpha ? 4 : 3)], i, 0) != 1) {
+			fprintf(stderr, "Failed to write scanline: %u\n", i);
+		}
+	}
+
+	srcImageRGBA->unlockRect();
+
+	TIFFFlush(m_Tiff);
+
+	if (newBuffer != NULL) {
+		delete [] newBuffer;
+	}
+
+	uint8_t *tmpBuffer;
+	uint64_t tmpLength;
+	if (!m_TempStorage->asBuffer(tmpBuffer, tmpLength)) {
+		return false;
+	}
+
+	// Is there any way to prevent this copy?  We could get the pointer from m_OutputStorage and wrap that with
+	// SeekableMemoryStorage, but then m_OutputStorage's m_UsedBytes would not be valid as it will if we call write().
+	// A setter for m_UsedBytes would impact all Storage classes in IC for this niche use-case.
+	uint64_t bytes_written = m_OutputStorage->write(tmpBuffer, m_TempStorage->totalBytesWritten());
+	if (bytes_written != m_TempStorage->totalBytesWritten()) {
+		fprintf(stderr, "Failed to copy encoded temp output to output storage\n");
+		return false;
+	}
+
+	return true;
+}
+
+unsigned int ImageWriterTIFF::writeRows(Image* sourceImage, unsigned int sourceRow, unsigned int numRows)
+{
+	return 0;
+}
+
+bool ImageWriterTIFF::beginWrite(unsigned int width, unsigned int height, EImageColorModel colorModel)
+{
+	return false;
+}
+
+bool ImageWriterTIFF::endWrite()
+{
+	return false;
+}
+bool ImageWriterTIFF::initWithStorage(Storage* output)
+{
+
+	uint8_t *buffer;
+	uint64_t length;
+	if (!output) {
+		fprintf(stderr, "Output storage pointer is NULL\n");
+		return false;
+	}
+
+	// Ignore buffer ptr, only want length
+	if (!output->asBuffer(buffer, length)) {
+		fprintf(stderr, "Failed to get pointer/length of output storage buffer\n");
+		return false;
+	}
+	m_OutputStorage = output;
+
+	// Allocate separately to prevent ownership and overgrowing destination buffer
+	m_EncodedDataBuffer = new uint8_t[length];
+	m_TempStorage = new SeekableMemoryStorage(m_EncodedDataBuffer, length);
+	if (!m_TempStorage || !m_EncodedDataBuffer) {
+		fprintf(stderr, "Failed to create temporary storage for encoded output.\n");
+		return false;
+	}
+
+	return true;
+}
+
+EImageFormat ImageWriterTIFF::Factory::getFormat()
+{
+	return kImageFormat_TIFF;
+}
+
+bool ImageWriterTIFF::Factory::appropriateForInputFormat(EImageFormat inputFormat)
+{
+	return inputFormat == kImageFormat_TIFF;
+}
+
+bool ImageWriterTIFF::Factory::supportsInputColorModel(EImageColorModel colorModel)
+{
+	return Image::colorModelIsRGBA(colorModel);
+}
+
+bool ImageWriterTIFF::Factory::matchesExtension(const char *extension)
+{
+	return strcasecmp(extension, "tif") == 0 || strcasecmp(extension, "tiff") == 0;
+}
+
+uint64_t ImageWriterTIFF::SeekableMemoryStorage::write(const void* dataBuffer, uint64_t numBytes)
+{
+	uint64_t bytesWritten = MemoryStorage::write(dataBuffer, numBytes);
+	if (m_UsedBytes > m_WrittenSize) {
+		m_WrittenSize = m_UsedBytes;
+	}
+	return bytesWritten;
+}
+
+uint64_t ImageWriterTIFF::SeekableMemoryStorage::read(void* destBuffer, uint64_t numBytes)
+{
+	uint64_t bytesToRead = numBytes;
+	if(SafeUAdd(m_UsedBytes, numBytes) > m_TotalBytes) {
+		bytesToRead = SafeUSub(m_TotalBytes, m_UsedBytes);
+	}
+	if(bytesToRead > 0) {
+		memcpy(destBuffer, m_Buffer + m_UsedBytes, (size_t)bytesToRead);
+		m_UsedBytes = SafeUAdd(m_UsedBytes, bytesToRead);
+	}
+	return bytesToRead;
+}
+
+uint64_t ImageWriterTIFF::SeekableMemoryStorage::totalBytesWritten()
+{
+	return m_WrittenSize;
+}
+
+bool ImageWriterTIFF::SeekableMemoryStorage::seek(int64_t pos, SeekMode mode)
+{
+	if (mode == SeekMode::kSeek_Current) {
+		if (m_UsedBytes + pos > m_TotalBytes) {
+			fprintf(stderr, "ImageWriterTIFF::SeekableMemoryStorage::seek Seek_Current exceeded buffer size\n");
+			return false;
+		}
+		m_UsedBytes += pos;
+	} else if (mode == SeekMode::kSeek_End) {
+		if (m_WrittenSize + pos > m_TotalBytes) {
+			fprintf(stderr, "ImageWriterTIFF::SeekableMemoryStorage::seek Seek_End exceeded buffer size\n");
+			return false;
+		}
+		m_WrittenSize += pos;
+	} else { // SeekMode::kSeek_Set
+		if ((uint64_t)pos > m_TotalBytes) {
+			fprintf(stderr, "ImageWriterTIFF::SeekableMemoryStorage::seek Seek_Set exceeded buffer size\n");
+			return false;
+		}
+		m_UsedBytes = pos;
+	}
+
+	return true;
+}
+
+uint64_t ImageWriterTIFF::SeekableMemoryStorage::tell()
+{
+	return m_UsedBytes;
+}
+
+} // namespace

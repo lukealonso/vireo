@@ -26,6 +26,7 @@
 
 #include "imagecore/formats/reader.h"
 #include "imagecore/formats/writer.h"
+#include "imagecore/utils/securemath.h"
 #include "register.h"
 #include "tiffio.h"
 
@@ -53,6 +54,60 @@ private:
 	unsigned int m_Height;
 	bool m_HasAlpha;
 	TIFF* m_Tiff;
+};
+
+class ImageWriterTIFF : public ImageWriter
+{
+public:
+	DECLARE_IMAGE_WRITER(ImageWriterTIFF);
+
+	virtual bool writeImage(Image* sourceImage);
+
+	// Incremental writing not done, just implement to satisfy impl requirement.
+	virtual bool beginWrite(unsigned int width, unsigned int height, EImageColorModel colorModel);
+	virtual unsigned int writeRows(Image* sourceImage, unsigned int sourceRow, unsigned int numRows);
+	virtual bool endWrite();
+
+	virtual bool copyLossless(ImageReader* reader);
+
+	enum SeekMode
+	{
+		kSeek_Set = 0,
+		kSeek_Current = 1,
+		kSeek_End = 2
+	};
+
+	class SeekableMemoryStorage : public MemoryStorage
+	{
+	public:
+		SeekableMemoryStorage() : m_WrittenSize(0) {}
+		SeekableMemoryStorage(uint64_t bufferLength) :
+			MemoryStorage(bufferLength),
+			m_WrittenSize(0) {}
+		SeekableMemoryStorage(void* buffer, uint64_t length) :
+			MemoryStorage(buffer, length),
+			m_WrittenSize(0) {}
+		virtual uint64_t write(const void* dataBuffer, uint64_t numBytes);
+		virtual uint64_t read(void* destBuffer, uint64_t numBytes);
+		virtual uint64_t totalBytesWritten();
+		virtual bool seek(int64_t pos, SeekMode mode);
+		virtual uint64_t tell();
+		// The MemoryStorage::flush() will mess with seekable offsets, so override here to
+		// prevent it being called virtually.
+		virtual void flush() {}
+	protected:
+		// libtiff will seek past the end of written data, m_WrittenSize will therefore reflect max written
+		// bytes, while m_UsedBytes reflects the current pointer.
+		uint64_t m_WrittenSize;
+	};
+
+private:
+	virtual bool initWithStorage(Storage* output);
+
+	TIFF* m_Tiff;
+	SeekableMemoryStorage *m_TempStorage;
+	Storage *m_OutputStorage;
+	uint8_t *m_EncodedDataBuffer;
 };
 
 }
