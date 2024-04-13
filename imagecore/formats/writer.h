@@ -122,7 +122,8 @@ public:
 		kWriteOption_AssumeMCUPaddingFilled     = 0x80,
 		kWriteOption_ForcePNGRunLengthEncoding  = 0x100,
 		kWriteOption_Progressive                = 0x200,
-		kWriteOption_ForceNoChromaSubsampling   = 0x300
+		kWriteOption_ForceNoChromaSubsampling   = 0x400,
+		kWriteOption_TIFFTileSizeMask           = 0x1FF0000
 	};
 
 	virtual ~ImageWriter() { }
