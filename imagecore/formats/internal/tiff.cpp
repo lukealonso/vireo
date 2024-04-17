@@ -321,6 +321,27 @@ bool ImageWriterTIFF::copyLossless(ImageReader* reader)
 	return ImageWriter::copyLossless(reader);
 }
 
+bool determineTileSize(unsigned int &ts, unsigned int imageWidth, unsigned int imageHeight)
+{
+	if (ts) {
+		if (imageWidth % ts != 0 || imageHeight % ts != 0) {
+			fprintf(stderr, "Cannot use requested tile size of %u with %ux%u image, partially filled tiles "
+				"currently not supported\n", ts, imageWidth, imageHeight);
+			return false;
+		}
+		return true;
+	}
+
+	for (ts = 256; ts >= 16; ts--) {
+		if (imageWidth % ts == 0 && imageHeight % ts == 0) {
+			return true;
+		}
+	}
+
+	fprintf(stderr, "Failed to auto-calculate tile size, image doesn't seem 16px aligned, valid tile size is [16..256], unaligned tiles not currently supported.");
+	return false;
+}
+
 bool ImageWriterTIFF::writeImage(Image* sourceImage)
 {
 	TIFFSetErrorHandler(TIFFSilentWarningHandler);
@@ -345,6 +366,7 @@ bool ImageWriterTIFF::writeImage(Image* sourceImage)
 	}
 
 	bool hasAlpha = sourceImage->getColorModel() == kColorModel_RGBA;
+	bool doTiling = !(m_WriteOptions & kSupportedWriteOptions_Progressive);
 
 	TIFFSetField(m_Tiff, TIFFTAG_IMAGEWIDTH, srcImageRGBA->getWidth());
 	TIFFSetField(m_Tiff, TIFFTAG_IMAGELENGTH, srcImageRGBA->getHeight());
@@ -363,36 +385,87 @@ bool ImageWriterTIFF::writeImage(Image* sourceImage)
 	unsigned int pitch = 0;
 	uint8_t* rawBuffer = srcImageRGBA->lockRect(srcImageRGBA->getWidth(), srcImageRGBA->getHeight(), pitch);
 
-	// If there's no alpha channel we can compress the buffer 25% and write only the 3 valid channels,
-	// this requires an extra copy - more time consuming for the benefit of smaller TIFF output.
-	uint8_t *newBuffer = NULL;
-	if (!hasAlpha) {
-		// pitch is in bytes, not pixels
-		newBuffer = new uint8_t[pitch * srcImageRGBA->getHeight()];
-		uint8_t *srcPtr = rawBuffer;
-		uint8_t *dstPtr = newBuffer;
-		for (unsigned int i = 0 ; i < srcImageRGBA->getHeight() * srcImageRGBA->getWidth() ; ++i) {
-			*dstPtr = *srcPtr; dstPtr++; srcPtr++;
-			*dstPtr = *srcPtr; dstPtr++; srcPtr++;
-			*dstPtr = *srcPtr; dstPtr++; srcPtr++;
-			srcPtr++;
+	if (doTiling) {
+		if (!determineTileSize(m_TileSize, srcImageRGBA->getWidth(), srcImageRGBA->getHeight())) {
+			return false;
 		}
-		rawBuffer = newBuffer;
-	}
 
-	for (unsigned int i = 0 ; i < srcImageRGBA->getHeight() ; ++i) {
-		if (TIFFWriteScanline(m_Tiff, &rawBuffer[srcImageRGBA->getWidth() * i * (hasAlpha ? 4 : 3)], i, 0) != 1) {
-			fprintf(stderr, "Failed to write scanline: %u\n", i);
+		// Right now we're only supporting square tiles but we set both explicitly here and proceed as if
+		// not square so that we only need to update here if this changes.
+		uint32_t tileWidth = m_TileSize;
+		uint32_t tileHeight = m_TileSize;
+
+		TIFFSetField(m_Tiff, TIFFTAG_TILELENGTH, tileHeight);
+		TIFFSetField(m_Tiff, TIFFTAG_TILEWIDTH, tileWidth);
+
+		ImageRGBA* tile = ImageRGBA::create(tileWidth, tileHeight, hasAlpha);
+		pitch = 0;
+		uint8_t *tilePtr = tile->lockRect(tileWidth, tileHeight, pitch);
+		uint8_t *tripleChannelBuffer = NULL;
+		if (!hasAlpha) {
+			tripleChannelBuffer = new uint8_t[pitch * tileHeight];
+		}
+
+		for (unsigned int y = 0 ; y < srcImageRGBA->getHeight() ; y += tileHeight) {
+			for (unsigned int x = 0 ; x < srcImageRGBA->getWidth() ; x += tileWidth) {
+				srcImageRGBA->copyRect(tile, x, y, 0, 0, tileWidth, tileHeight);
+
+				tilePtr = tile->lockRect(tileWidth, tileHeight, pitch);
+
+				// If there is no alpha channel we compress this down to a 3 channel buffer in order to make a smaller TIFF output at the expense of time now.
+				if (!hasAlpha) {
+					for (uint8_t *src = tilePtr, *dst = tripleChannelBuffer ; src < tilePtr + (tileHeight * pitch) && dst < tripleChannelBuffer + (tileHeight * pitch) ; src += 4, dst += 3) {
+						dst[0] = src[0];
+						dst[1] = src[1];
+						dst[2] = src[2];
+					}
+					tilePtr = tripleChannelBuffer;
+				}
+
+				int write_ret = TIFFWriteTile(m_Tiff,  tilePtr,  x, y, 0, 0);
+				int expected_tile_size = TIFFTileSize(m_Tiff);
+				if (write_ret != expected_tile_size) {
+					fprintf(stderr, "Failed to write tile to %u, %u (wrote %u bytes)\n", x, y, write_ret);
+				}
+			}
+		}
+
+		delete tile;
+		if (tripleChannelBuffer) {
+			delete [] tripleChannelBuffer;
+		}
+	} else {
+		// If there's no alpha channel we can compress the buffer 25% and write only the 3 valid channels,
+		// this requires an extra copy - more time consuming for the benefit of smaller TIFF output.
+		uint8_t *newBuffer = NULL;
+		if (!hasAlpha) {
+			// pitch is in bytes, not pixels
+			newBuffer = new uint8_t[pitch * srcImageRGBA->getHeight()];
+			uint8_t *srcPtr = rawBuffer;
+			uint8_t *dstPtr = newBuffer;
+			for (unsigned int i = 0 ; i < srcImageRGBA->getHeight() * srcImageRGBA->getWidth() ; ++i) {
+				*dstPtr = *srcPtr; dstPtr++; srcPtr++;
+				*dstPtr = *srcPtr; dstPtr++; srcPtr++;
+				*dstPtr = *srcPtr; dstPtr++; srcPtr++;
+				srcPtr++;
+			}
+			rawBuffer = newBuffer;
+		}
+
+		for (unsigned int i = 0 ; i < srcImageRGBA->getHeight() ; ++i) {
+			if (TIFFWriteScanline(m_Tiff, &rawBuffer[srcImageRGBA->getWidth() * i * (hasAlpha ? 4 : 3)], i, 0) != 1) {
+				fprintf(stderr, "Failed to write scanline: %u\n", i);
+			}
+		}
+
+		if (newBuffer != NULL) {
+			delete [] newBuffer;
 		}
 	}
 
 	srcImageRGBA->unlockRect();
 
 	TIFFFlush(m_Tiff);
-
-	if (newBuffer != NULL) {
-		delete [] newBuffer;
-	}
 
 	uint8_t *tmpBuffer;
 	uint64_t tmpLength;
@@ -452,6 +525,40 @@ bool ImageWriterTIFF::initWithStorage(Storage* output)
 	}
 
 	return true;
+}
+
+void ImageWriterTIFF::setWriteOptions(unsigned int writeOptions)
+{
+	// Warn of invalid flags according to:
+	// 31:25: Reserved
+	// 24:16: Tile size ([16..256])
+	// 15:0:  Flags
+	int bitWidth = (sizeof(int) * 8);
+	for (int i = 0 ; i < bitWidth ; ++i) {
+		// Skip the place where the tile size may be, that's not a flag.
+		if (i >= 16 && i <= 24) {
+			continue;
+		}
+
+		unsigned int optionSet = writeOptions & (1 << i);
+		switch (optionSet) {
+			case 0:
+			case kSupportedWriteOptions_Progressive:
+				break;
+			default:
+				fprintf(stderr, "ImageWriterTIFF option 0x%x not supported\n", optionSet);
+		}
+	}
+
+	unsigned int tile_size = (writeOptions & kSupportedWriteOptions_TIFFTileSizeMask) >> 16;
+	if (tile_size != 0 && (tile_size < 16 || tile_size > 256)) {
+		fprintf(stderr, "ImageWriterTIFF tile size parameter is outside [16..256] boundary, ignoring, using auto (0)\n");
+		tile_size = 0;
+		writeOptions = (writeOptions & (~kSupportedWriteOptions_TIFFTileSizeMask));
+	}
+
+	m_TileSize = tile_size;
+	m_WriteOptions = writeOptions;
 }
 
 EImageFormat ImageWriterTIFF::Factory::getFormat()
@@ -516,7 +623,7 @@ bool ImageWriterTIFF::SeekableMemoryStorage::seek(int64_t pos, SeekMode mode)
 		}
 		m_WrittenSize += pos;
 	} else { // SeekMode::kSeek_Set
-		if ((uint64_t)pos > m_TotalBytes) {
+		if (pos > static_cast<int64_t>(m_TotalBytes)) {
 			fprintf(stderr, "ImageWriterTIFF::SeekableMemoryStorage::seek Seek_Set exceeded buffer size\n");
 			return false;
 		}

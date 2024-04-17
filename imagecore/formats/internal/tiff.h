@@ -70,6 +70,18 @@ public:
 
 	virtual bool copyLossless(ImageReader* reader);
 
+	enum SupportedWriteOptions
+	{
+		// Default to tiled mode, this option forces progressive (scanline) based encoding
+		kSupportedWriteOptions_Progressive       = 0x200,
+
+		// Tile size, bounded to [16..256] inclusive, 0 denotes auto choose based on resolution
+		kSupportedWriteOptions_TIFFTileSizeMask  = 0x1FF0000,
+	};
+	static_assert(sizeof(SupportedWriteOptions) == sizeof(unsigned int), "Cannot mask unsigned int write options, incompatible sizes.");
+
+	virtual void setWriteOptions(unsigned int writeOptions);
+
 	enum SeekMode
 	{
 		kSeek_Set = 0,
@@ -108,6 +120,8 @@ private:
 	SeekableMemoryStorage *m_TempStorage;
 	Storage *m_OutputStorage;
 	uint8_t *m_EncodedDataBuffer;
+	unsigned int m_WriteOptions;
+	unsigned int m_TileSize;
 };
 
 }
